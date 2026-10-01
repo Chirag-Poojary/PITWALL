@@ -35,6 +35,9 @@ export default function Login() {
         <button className="btn btn-red btn-block" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
       </form>
       <p className="auth-switch">New to PITWALL? <Link to="/register">Create an account</Link></p>
+      <p className="auth-switch" style={{ marginTop: '12px' }}>
+        <Link to="/admin/login" style={{ color: 'var(--muted)', fontSize: '13px' }}>Analyst Portal Login →</Link>
+      </p>
     </AuthShell>
   )
 }

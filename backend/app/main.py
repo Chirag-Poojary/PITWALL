@@ -26,8 +26,6 @@ DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 async def lifespan(app: FastAPI):
     db.init()
     auth.seed_admin()
-    get_data()            # load CSVs
-    ml.start_training()   # background thread (uses disk cache when present)
     yield
 
 

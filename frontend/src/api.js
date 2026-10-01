@@ -11,8 +11,10 @@ export class ApiError extends Error {
   constructor(message, status) { super(message); this.status = status }
 }
 
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+
 export async function api(path, { method = 'GET', body, params } = {}) {
-  let url = `/api${path}`
+  let url = `${API_BASE}/api${path}`
   if (params) {
     const q = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => {

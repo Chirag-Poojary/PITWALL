@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+backend/pitwall.db
+backend/.jwt_secret
+backend/models_cache.joblib
+frontend/node_modules/

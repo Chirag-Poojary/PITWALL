@@ -433,7 +433,10 @@ def _train_all() -> None:
             STATE["current"] = name
             out[name] = fn()
             STATE["models"][name] = out[name]
-        joblib.dump({"version": CACHE_VERSION, "models": out}, CACHE, compress=3)
+        try:
+            joblib.dump({"version": CACHE_VERSION, "models": out}, CACHE, compress=3)
+        except OSError:
+            pass  # Read-only filesystem (e.g. Vercel), models remain in memory
         STATE.update(status="ready", finished=time.time(), current=None)
     except Exception as e:  # pragma: no cover
         STATE.update(status="error", error=f"{e}\n{traceback.format_exc()}")

@@ -34,7 +34,22 @@ def _load_env() -> None:
 
 _load_env()
 
-DB_PATH = Path(os.getenv("PITWALL_DB", Path(__file__).resolve().parent.parent / "pitwall.db"))
+import tempfile
+
+def _get_db_path() -> Path:
+    env_p = os.getenv("PITWALL_DB")
+    if env_p:
+        return Path(env_p)
+    default_p = Path(__file__).resolve().parent.parent / "pitwall.db"
+    try:
+        test_file = default_p.parent / ".writable_test"
+        test_file.write_text("ok")
+        test_file.unlink()
+        return default_p
+    except OSError:
+        return Path(tempfile.gettempdir()) / "pitwall.db"
+
+DB_PATH = _get_db_path()
 _local = threading.local()
 
 DEFAULT_PREFS: dict[str, Any] = {

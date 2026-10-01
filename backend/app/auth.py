@@ -24,9 +24,12 @@ def _secret() -> str:
     env = os.getenv("JWT_SECRET")
     if env:
         return env
-    if not _SECRET_FILE.exists():
-        _SECRET_FILE.write_text(secrets.token_urlsafe(48))
-    return _SECRET_FILE.read_text().strip()
+    try:
+        if not _SECRET_FILE.exists():
+            _SECRET_FILE.write_text(secrets.token_urlsafe(48))
+        return _SECRET_FILE.read_text().strip()
+    except OSError:
+        return "pitwall-production-secret-key-jwt-signing"
 
 
 SECRET = _secret()

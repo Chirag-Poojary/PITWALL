@@ -247,7 +247,7 @@ def fetch_all_rows_parallel(
     select: str = "*",
     total_count: int | None = None,
     chunk_size: int = 1000,
-    max_workers: int = 8,
+    max_workers: int = 12,
 ) -> list[dict]:
     """Downloads large tables using concurrent range queries across thread-isolated Supabase clients."""
     client = get_supabase_client()
@@ -276,36 +276,54 @@ def fetch_all_rows_parallel(
 
 
 def fetch_final_standings(final_race_ids: list[int]) -> tuple[list[dict], list[dict]]:
-    """Fetches driver and constructor standings only for the final race of each season."""
-    client = get_supabase_client()
+    """Fetches driver and constructor standings concurrently only for the final race of each season."""
     if not final_race_ids:
         return [], []
 
-    # Driver standings for final rounds
-    all_ds: list[dict] = []
-    offset = 0
-    while True:
-        res = client.table("driver_standings").select("*").in_("race_id", final_race_ids).range(offset, offset + 999).execute()
-        if not res.data:
-            break
-        all_ds.extend(res.data)
-        if len(res.data) < 1000:
-            break
-        offset += 1000
+    def _get_ds() -> list[dict]:
+        c = get_supabase_client()
+        all_ds: list[dict] = []
+        offset = 0
+        while True:
+            res = (
+                c.table("driver_standings")
+                .select("*")
+                .in_("race_id", final_race_ids)
+                .range(offset, offset + 999)
+                .execute()
+            )
+            if not res.data:
+                break
+            all_ds.extend(res.data)
+            if len(res.data) < 1000:
+                break
+            offset += 1000
+        return all_ds
 
-    # Constructor standings for final rounds
-    all_cs: list[dict] = []
-    offset = 0
-    while True:
-        res = client.table("constructor_standings").select("*").in_("race_id", final_race_ids).range(offset, offset + 999).execute()
-        if not res.data:
-            break
-        all_cs.extend(res.data)
-        if len(res.data) < 1000:
-            break
-        offset += 1000
+    def _get_cs() -> list[dict]:
+        c = get_supabase_client()
+        all_cs: list[dict] = []
+        offset = 0
+        while True:
+            res = (
+                c.table("constructor_standings")
+                .select("*")
+                .in_("race_id", final_race_ids)
+                .range(offset, offset + 999)
+                .execute()
+            )
+            if not res.data:
+                break
+            all_cs.extend(res.data)
+            if len(res.data) < 1000:
+                break
+            offset += 1000
+        return all_cs
 
-    return all_ds, all_cs
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_ds = pool.submit(_get_ds)
+        f_cs = pool.submit(_get_cs)
+        return f_ds.result(), f_cs.result()
 
 
 def fetch_ml_dataset(min_season: int = 2004) -> list[dict]:

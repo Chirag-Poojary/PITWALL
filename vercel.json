@@ -10,6 +10,12 @@
       "framework": "vite"
     }
   },
+  "functions": {
+    "backend/**": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  },
   "rewrites": [
     {
       "source": "/api/(.*)",

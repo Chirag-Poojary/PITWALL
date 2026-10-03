@@ -44,9 +44,11 @@ class F1Data:
     """Holds all active in-memory F1 tables, loaded directly from Supabase Cloud Database."""
 
     def __init__(self) -> None:
-        self._load_from_supabase()
         self._lap_times: pd.DataFrame | None = None
         self._f1: pd.DataFrame | None = None
+        self._qualifying: pd.DataFrame | None = None
+        self._pit_stops: pd.DataFrame | None = None
+        self._load_from_supabase()
         self._prepare()
 
     # ------------------------------------------------------------------ Load from Supabase
@@ -102,11 +104,9 @@ class F1Data:
         last_rounds = self.races.groupby("year")["round"].idxmax()
         final_race_ids = self.races.loc[last_rounds, "raceId"].tolist()
 
-        # Batch 2: Results, Qualifying, Pit Stops, and Final Standings
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        # Batch 2: Results and Final Standings
+        with ThreadPoolExecutor(max_workers=2) as pool:
             f_results = pool.submit(db.fetch_all_rows_parallel, "race_results", "*", 26759)
-            f_quali = pool.submit(db.fetch_all_rows_parallel, "qualifying_results", "*", 10494)
-            f_pits = pool.submit(db.fetch_all_rows_parallel, "pit_stops", "*", 11371)
             f_standings = pool.submit(db.fetch_final_standings, final_race_ids)
 
         self.results = pd.DataFrame(f_results.result()).rename(
@@ -124,24 +124,6 @@ class F1Data:
                 "fastest_lap_time": "fastestLapTime",
                 "fastest_lap_speed": "fastestLapSpeed",
                 "status_id": "statusId",
-            }
-        )
-        self.qualifying = pd.DataFrame(f_quali.result()).rename(
-            columns={
-                "qualify_id": "qualifyId",
-                "race_id": "raceId",
-                "driver_id": "driverId",
-                "constructor_id": "constructorId",
-                "driver_number": "number",
-            }
-        )
-        self.pit_stops = pd.DataFrame(f_pits.result()).rename(
-            columns={
-                "race_id": "raceId",
-                "driver_id": "driverId",
-                "stop_number": "stop",
-                "stop_time": "time",
-                "stop_duration": "duration",
             }
         )
 
@@ -254,6 +236,42 @@ class F1Data:
     def race_ids_with_laps(self) -> set[int]:
         """Set of raceIds that have lap-by-lap records in Supabase (1996 onwards)."""
         return set(self.races[self.races["year"] >= 1996]["raceId"].unique())
+
+    @property
+    def qualifying(self) -> pd.DataFrame:
+        """Loaded lazily on first access from Supabase."""
+        if self._qualifying is None:
+            from . import db
+
+            rows = db.fetch_all_rows_parallel("qualifying_results", "*", 10494)
+            self._qualifying = pd.DataFrame(rows).rename(
+                columns={
+                    "qualify_id": "qualifyId",
+                    "race_id": "raceId",
+                    "driver_id": "driverId",
+                    "constructor_id": "constructorId",
+                    "driver_number": "number",
+                }
+            )
+        return self._qualifying
+
+    @property
+    def pit_stops(self) -> pd.DataFrame:
+        """Loaded lazily on first access from Supabase."""
+        if self._pit_stops is None:
+            from . import db
+
+            rows = db.fetch_all_rows_parallel("pit_stops", "*", 11371)
+            self._pit_stops = pd.DataFrame(rows).rename(
+                columns={
+                    "race_id": "raceId",
+                    "driver_id": "driverId",
+                    "stop_number": "stop",
+                    "stop_time": "time",
+                    "stop_duration": "duration",
+                }
+            )
+        return self._pit_stops
 
     @property
     def f1(self) -> pd.DataFrame:

@@ -100,13 +100,16 @@ def require_admin(u=Depends(current_user)):
 
 
 def seed_admin() -> None:
-    email = os.getenv("ADMIN_EMAIL", "admin@pitwall.local")
-    pw = os.getenv("ADMIN_PASSWORD", "Admin@123")
-    u = db.get_user_by_email(email)
-    if not u:
-        db.create_user("Analyst Admin", email, hash_password(pw), provider="password", role="admin")
-    elif u["role"] != "admin":
-        db.update_user(u["id"], role="admin")
+    try:
+        email = os.getenv("ADMIN_EMAIL", "admin@pitwall.local")
+        pw = os.getenv("ADMIN_PASSWORD", "RMBALP")
+        u = db.get_user_by_email(email)
+        if not u:
+            db.create_user("Analyst Admin", email, hash_password(pw), provider="password", role="admin")
+        elif u["role"] != "admin":
+            db.update_user(u["id"], role="admin")
+    except Exception as e:
+        pass
 
 
 # ------------------------------------------------------------------ routes

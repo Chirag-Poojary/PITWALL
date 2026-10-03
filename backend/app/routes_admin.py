@@ -281,7 +281,7 @@ def constructor_compare(ids: str, season_from: int | None = None, season_to: int
 def races(season: int):
     d = get_data()
     r = d.races[d.races["year"] == season].sort_values("round")
-    have_laps = set(d.lap_times["raceId"].unique())
+    have_laps = d.race_ids_with_laps()
     r = r.assign(has_laps=r["raceId"].isin(have_laps), date=r["date"].dt.strftime("%Y-%m-%d"))
     return records(r[["raceId", "round", "race_name", "date", "circuit_name", "country", "has_laps"]])
 
@@ -297,7 +297,7 @@ def race(race_id: int):
     rr = res[res["raceId"] == race_id].sort_values("positionOrder")
     table = rr[["positionOrder", "positionText", "driverId", "driver_name", "code", "constructor_name", "grid", "laps",
                 "time", "status", "points", "fastestLapTime", "rank", "gained"]]
-    lt = d.lap_times[d.lap_times["raceId"] == race_id].copy()
+    lt = d.lap_times_for_race(race_id)
     codes = rr.set_index("driverId")["code"].fillna(rr.set_index("driverId")["driver_name"]).to_dict()
     names = rr.set_index("driverId")["driver_name"].to_dict()
     teams = rr.set_index("driverId")["constructor_name"].to_dict()

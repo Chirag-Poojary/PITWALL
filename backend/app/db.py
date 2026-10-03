@@ -140,9 +140,18 @@ def init() -> None:
             print("[PITWALL DB] WARNING: Connected to Supabase, but could not query 'users':")
             print(f"  {e}")
             print("\nPlease make sure you have executed the schema script in your Supabase project:")
-            print("  File: supabase_schema.sql (or backend/supabase_schema.sql)")
+            print("  File: supabase_schema.sql")
             print("  Dashboard: https://supabase.com/dashboard/project/_/sql")
             print("=" * 76 + "\n")
+            return
+
+        try:
+            # Probe circuits table to verify F1 dataset schema existence
+            client.table("circuits").select("circuit_id").limit(1).execute()
+            print("[PITWALL DB] Supabase F1 relational tables verified successfully.")
+        except Exception:
+            print("[PITWALL DB] Note: F1 relational tables not yet initialized in Supabase.")
+            print("             Run 'supabase_schema.sql' in Supabase SQL Editor and 'python scripts/migrate_csv_to_supabase.py'.")
         return
 
     # Fallback to SQLite
@@ -288,3 +297,52 @@ def get_all_users() -> list[dict]:
 
     rows = conn().execute("SELECT * FROM users ORDER BY id").fetchall()
     return [dict(r) for r in rows]
+
+
+# ------------------------------------------------------------------ Supabase F1 Queries
+def fetch_all_rows(table_name: str, select: str = "*", gte_filters: dict[str, Any] | None = None,
+                   eq_filters: dict[str, Any] | None = None, batch_size: int = 1000) -> list[dict]:
+    """Paginates through a Supabase table/view using .range() chunks."""
+    client = get_supabase_client()
+    if not client:
+        return []
+    all_data: list[dict] = []
+    offset = 0
+    while True:
+        query = client.table(table_name).select(select).range(offset, offset + batch_size - 1)
+        if eq_filters:
+            for col, val in eq_filters.items():
+                query = query.eq(col, val)
+        if gte_filters:
+            for col, val in gte_filters.items():
+                query = query.gte(col, val)
+        res = query.execute()
+        if not res.data:
+            break
+        all_data.extend(res.data)
+        if len(res.data) < batch_size:
+            break
+        offset += batch_size
+    return all_data
+
+
+def fetch_ml_dataset(min_season: int = 2004) -> list[dict]:
+    """Fetches ML training features from the dynamic v_f1_ml_dataset SQL view."""
+    return fetch_all_rows("v_f1_ml_dataset", gte_filters={"season": min_season})
+
+
+def fetch_mv_driver_summaries() -> list[dict]:
+    """Fetches precomputed all-time driver career statistics from mv_driver_summaries."""
+    return fetch_all_rows("mv_driver_summaries")
+
+
+def fetch_mv_constructor_summaries() -> list[dict]:
+    """Fetches precomputed all-time constructor career statistics from mv_constructor_summaries."""
+    return fetch_all_rows("mv_constructor_summaries")
+
+
+def fetch_lap_times_for_race(race_id: int) -> list[dict]:
+    """Fetches all lap times for a specific race directly using indexed lookup."""
+    return fetch_all_rows("lap_times", eq_filters={"race_id": race_id})
+
+

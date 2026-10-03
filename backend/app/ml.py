@@ -423,11 +423,17 @@ def _train_all() -> None:
     STATE.update(status="training", error=None, started=time.time())
     try:
         if CACHE.exists():
-            cached = joblib.load(CACHE)
-            if cached.get("version") == CACHE_VERSION:
-                STATE["models"] = cached["models"]
-                STATE.update(status="ready", finished=time.time())
-                return
+            try:
+                cached = joblib.load(CACHE)
+                if cached.get("version") == CACHE_VERSION:
+                    STATE["models"] = cached["models"]
+                    STATE.update(status="ready", finished=time.time())
+                    return
+            except Exception:
+                try:
+                    CACHE.unlink(missing_ok=True)
+                except OSError:
+                    pass
         out = {}
         for name, fn in TRAINERS.items():
             STATE["current"] = name

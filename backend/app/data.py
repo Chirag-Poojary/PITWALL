@@ -116,16 +116,65 @@ class F1Data:
             self._lap_times = _read("lap_times.csv")
         return self._lap_times
 
+    def lap_times_for_race(self, race_id: int) -> pd.DataFrame:
+        """Fetches lap times for a single race directly from Supabase, or falls back to in-memory DataFrame."""
+        from . import db
+        rows = db.fetch_lap_times_for_race(race_id)
+        if rows:
+            df = pd.DataFrame(rows)
+            return df.rename(columns={"race_id": "raceId", "driver_id": "driverId", "lap_time_str": "time"})
+        return self.lap_times[self.lap_times["raceId"] == race_id].copy()
+
+    def race_ids_with_laps(self) -> set[int]:
+        """Set of raceIds that have lap-by-lap records."""
+        from . import db
+        client = db.get_supabase_client()
+        if client:
+            try:
+                # Query distinct race_ids via Supabase
+                res = client.table("lap_times").select("race_id").limit(1000).execute()
+                if res.data:
+                    return {int(r["race_id"]) for r in res.data}
+            except Exception:
+                pass
+        return set(self.lap_times["raceId"].unique())
+
     @property
     def f1(self) -> pd.DataFrame:
-        """The merged notebook dataset (f1.csv) used by the ML models."""
+        """The dataset used by ML models (from Supabase view v_f1_ml_dataset or f1.csv)."""
         if self._f1 is None:
-            df = _read("f1.csv")
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-            df["dob"] = pd.to_datetime(df["dob"], errors="coerce")
-            for c in ["grid", "laps", "fastestLapSpeed", "points", "positionOrder"]:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
-            self._f1 = df
+            from . import db
+            try:
+                rows = db.fetch_ml_dataset(min_season=2004)
+                if rows:
+                    df = pd.DataFrame(rows)
+                    rename_cols = {
+                        "result_id": "resultId", "race_id": "raceId", "driver_id": "driverId",
+                        "constructor_id": "constructorId", "circuit_id": "circuitId",
+                        "driver_number": "driver_number", "nationality_driver": "nationality_driver",
+                        "nationality_constructor": "nationality_constructor",
+                        "driver_ref": "driverRef", "constructor_ref": "constructorRef",
+                        "circuit_ref": "circuitRef", "position_text": "positionText",
+                        "position_order": "positionOrder", "fastest_lap": "fastestLap",
+                        "fastest_lap_time": "fastestLapTime", "fastest_lap_speed": "fastestLapSpeed",
+                        "status_id": "statusId"
+                    }
+                    df = df.rename(columns=rename_cols)
+                    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                    df["dob"] = pd.to_datetime(df["dob"], errors="coerce")
+                    for c in ["grid", "laps", "fastestLapSpeed", "points", "positionOrder"]:
+                        if c in df.columns:
+                            df[c] = pd.to_numeric(df[c], errors="coerce")
+                    self._f1 = df
+            except Exception:
+                pass
+            if self._f1 is None:
+                df = _read("f1.csv")
+                df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                df["dob"] = pd.to_datetime(df["dob"], errors="coerce")
+                for c in ["grid", "laps", "fastestLapSpeed", "points", "positionOrder"]:
+                    df[c] = pd.to_numeric(df[c], errors="coerce")
+                self._f1 = df
         return self._f1
 
     # -------------------------------------------------------------- summaries

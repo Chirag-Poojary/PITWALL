@@ -16,8 +16,39 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 NA = ["\\N", ""]
 
 
+TABLE_MAP: dict[str, tuple[str, dict[str, str]]] = {
+    "circuits.csv": ("circuits", {"circuit_id": "circuitId", "circuit_ref": "circuitRef"}),
+    "constructors.csv": ("constructors", {"constructor_id": "constructorId", "constructor_ref": "constructorRef"}),
+    "drivers.csv": ("drivers", {"driver_id": "driverId", "driver_ref": "driverRef", "driver_number": "number"}),
+    "races.csv": ("races", {"race_id": "raceId", "circuit_id": "circuitId", "race_date": "date", "race_time": "time"}),
+    "status.csv": ("race_statuses", {"status_id": "statusId", "status_name": "status"}),
+    "qualifying.csv": ("qualifying_results", {"qualify_id": "qualifyId", "race_id": "raceId", "driver_id": "driverId", "constructor_id": "constructorId", "driver_number": "number"}),
+    "pit_stops.csv": ("pit_stops", {"race_id": "raceId", "driver_id": "driverId", "stop_number": "stop", "stop_time": "time", "stop_duration": "duration"}),
+    "driver_standings.csv": ("driver_standings", {"driver_standings_id": "driverStandingsId", "race_id": "raceId", "driver_id": "driverId", "position_text": "positionText"}),
+    "constructor_standings.csv": ("constructor_standings", {"constructor_standings_id": "constructorStandingsId", "race_id": "raceId", "constructor_id": "constructorId", "position_text": "positionText"}),
+    "sprint_results.csv": ("sprint_results", {"sprint_result_id": "resultId", "race_id": "raceId", "driver_id": "driverId", "constructor_id": "constructorId", "driver_number": "number", "position_text": "positionText", "position_order": "positionOrder", "fastest_lap": "fastestLap", "fastest_lap_time": "fastestLapTime", "status_id": "statusId"}),
+    "results.csv": ("race_results", {"result_id": "resultId", "race_id": "raceId", "driver_id": "driverId", "constructor_id": "constructorId", "driver_number": "number", "position_text": "positionText", "position_order": "positionOrder", "race_time": "time", "fastest_lap": "fastestLap", "fastest_lap_rank": "rank", "fastest_lap_time": "fastestLapTime", "fastest_lap_speed": "fastestLapSpeed", "status_id": "statusId"}),
+}
+
+
 def _read(name: str, **kw) -> pd.DataFrame:
-    return pd.read_csv(DATA_DIR / name, na_values=NA, keep_default_na=True, low_memory=False, **kw)
+    p = DATA_DIR / name
+    if p.exists():
+        return pd.read_csv(p, na_values=NA, keep_default_na=True, low_memory=False, **kw)
+    # Supabase cloud database fallback when CSVs are not present
+    from . import db
+    if name in TABLE_MAP:
+        tbl, rename_map = TABLE_MAP[name]
+        try:
+            rows = db.fetch_all_rows(tbl)
+            if rows:
+                df = pd.DataFrame(rows)
+                if rename_map:
+                    df = df.rename(columns=rename_map)
+                return df
+        except Exception:
+            pass
+    return pd.DataFrame()
 
 
 def records(df: pd.DataFrame) -> list[dict]:
@@ -113,7 +144,11 @@ class F1Data:
     @property
     def lap_times(self) -> pd.DataFrame:
         if self._lap_times is None:
-            self._lap_times = _read("lap_times.csv")
+            p = DATA_DIR / "lap_times.csv"
+            if p.exists():
+                self._lap_times = _read("lap_times.csv")
+            else:
+                self._lap_times = pd.DataFrame(columns=["raceId", "driverId", "lap", "position", "time", "milliseconds"])
         return self._lap_times
 
     def lap_times_for_race(self, race_id: int) -> pd.DataFrame:

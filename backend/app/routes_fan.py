@@ -68,7 +68,7 @@ def calendar(year: int):
 
 # ---------------------------------------------------------------- schedule
 def _dataset_schedule() -> dict:
-    """Fallback calendar built from races.csv (latest season in the dataset)."""
+    """Fallback calendar built from Supabase races table (latest season in the dataset)."""
     d = get_data()
     year = d.latest_season
     r = d.races[d.races["year"] == year].sort_values("round")

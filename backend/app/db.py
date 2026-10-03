@@ -1,26 +1,25 @@
-"""Database storage layer for PITWALL: users and their preferences.
+"""Supabase Cloud Database storage layer for PITWALL: users, preferences, and F1 data.
 
-Supports:
-1. Supabase Cloud Database (PostgreSQL via Supabase Client) when SUPABASE_URL
-   and SUPABASE_KEY are provided.
-2. Local SQLite fallback (backend/pitwall.db) when Supabase is not configured.
+100% powered by Supabase PostgreSQL. No local database instances or files.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
-import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("pitwall.db")
 
-# Load .env if running standalone or environment not yet populated
+
+# ------------------------------------------------------------------ Environment
 def _load_env() -> None:
-    if os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY"):
+    """Ensure environment variables are loaded from root or backend .env if present."""
+    if os.getenv("SUPABASE_URL") and (os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")):
         return
     for base in [Path(__file__).resolve().parent.parent.parent, Path(__file__).resolve().parent.parent]:
         env_file = base / ".env"
@@ -32,25 +31,8 @@ def _load_env() -> None:
                     os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
             break
 
+
 _load_env()
-
-import tempfile
-
-def _get_db_path() -> Path:
-    env_p = os.getenv("PITWALL_DB")
-    if env_p:
-        return Path(env_p)
-    default_p = Path(__file__).resolve().parent.parent / "pitwall.db"
-    try:
-        test_file = default_p.parent / ".writable_test"
-        test_file.write_text("ok")
-        test_file.unlink()
-        return default_p
-    except OSError:
-        return Path(tempfile.gettempdir()) / "pitwall.db"
-
-DB_PATH = _get_db_path()
-_local = threading.local()
 
 DEFAULT_PREFS: dict[str, Any] = {
     "fav_drivers": [],        # driverRef strings, e.g. "hamilton"
@@ -60,104 +42,45 @@ DEFAULT_PREFS: dict[str, Any] = {
     "onboarded": False,
 }
 
-_supabase_client = None
-_supabase_tested = False
+_thread_local = threading.local()
 
 
 def get_supabase_client():
-    """Returns an authenticated Supabase client if configured, else None."""
-    global _supabase_client
-    if _supabase_client is not None:
-        return _supabase_client
+    """Returns a thread-local authenticated Supabase client. Raises RuntimeError if not configured."""
+    client = getattr(_thread_local, "client", None)
+    if client is not None:
+        return client
 
     url = (os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL") or "").strip()
-    key = (os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
+    key = (
+        os.getenv("SUPABASE_KEY")
+        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_ANON_KEY")
+        or ""
+    ).strip()
 
     if not url or not key:
-        return None
+        raise RuntimeError(
+            "Supabase Cloud Database credentials not found. "
+            "Please configure SUPABASE_URL and SUPABASE_KEY in your environment or .env file."
+        )
 
     try:
         from supabase import create_client
-        _supabase_client = create_client(url, key)
-        return _supabase_client
+        client = create_client(url, key)
+        _thread_local.client = client
+        return client
     except Exception as e:
-        logger.warning(f"[PITWALL DB] Could not initialize Supabase client: {e}")
-        return None
+        logger.error(f"[PITWALL DB] Failed to initialize Supabase client: {e}")
+        raise RuntimeError(f"Could not connect to Supabase Cloud Database: {e}") from e
 
 
 def is_supabase_enabled() -> bool:
     """True if Supabase client is configured and available."""
-    return get_supabase_client() is not None
-
-
-# ------------------------------------------------------------------ SQLite helpers
-def conn() -> sqlite3.Connection:
-    c = getattr(_local, "conn", None)
-    if c is None:
-        c = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c.row_factory = sqlite3.Row
-        _local.conn = c
-    return c
-
-
-def _init_sqlite() -> None:
-    c = conn()
-    c.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT NOT NULL UNIQUE,
-            password_hash TEXT,
-            provider TEXT NOT NULL DEFAULT 'password',
-            role TEXT NOT NULL DEFAULT 'user',
-            avatar TEXT,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS preferences (
-            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-            data TEXT NOT NULL
-        );
-        """
-    )
-    c.commit()
-
-
-# ------------------------------------------------------------------ Public API
-def init() -> None:
-    """Initialize storage tables or verify Supabase connection."""
-    client = get_supabase_client()
-    if client:
-        url = os.getenv("SUPABASE_URL", "")
-        masked_url = url[:28] + "..." if len(url) > 28 else url
-        print(f"[PITWALL DB] Storage mode: Supabase Cloud Database ({masked_url})")
-        try:
-            # Probe users table to verify schema existence
-            client.table("users").select("id").limit(1).execute()
-            print("[PITWALL DB] Supabase 'users' table verified successfully.")
-        except Exception as e:
-            print("\n" + "=" * 76)
-            print("[PITWALL DB] WARNING: Connected to Supabase, but could not query 'users':")
-            print(f"  {e}")
-            print("\nPlease make sure you have executed the schema script in your Supabase project:")
-            print("  File: supabase_schema.sql")
-            print("  Dashboard: https://supabase.com/dashboard/project/_/sql")
-            print("=" * 76 + "\n")
-            return
-
-        try:
-            # Probe circuits table to verify F1 dataset schema existence
-            client.table("circuits").select("circuit_id").limit(1).execute()
-            print("[PITWALL DB] Supabase F1 relational tables verified successfully.")
-        except Exception:
-            print("[PITWALL DB] Note: F1 relational tables not yet initialized in Supabase.")
-            print("             Run 'supabase_schema.sql' in Supabase SQL Editor and 'python scripts/migrate_csv_to_supabase.py'.")
-        return
-
-    # Fallback to SQLite
-    print(f"[PITWALL DB] Storage mode: Local SQLite ({DB_PATH.name})")
-    print("  [Tip] To store users in Supabase, set SUPABASE_URL and SUPABASE_KEY in .env")
-    _init_sqlite()
+    try:
+        return get_supabase_client() is not None
+    except Exception:
+        return False
 
 
 def _now() -> str:
@@ -169,61 +92,79 @@ def _clean_uid(uid: int | str) -> int | str:
     return int(s) if s.isdigit() else s
 
 
-def get_user_by_email(email: str) -> dict | sqlite3.Row | None:
+# ------------------------------------------------------------------ Lifecycle & Verification
+def init() -> None:
+    """Verifies connection to Supabase Cloud PostgreSQL and required tables."""
+    client = get_supabase_client()
+    url = os.getenv("SUPABASE_URL", "")
+    masked_url = url[:28] + "..." if len(url) > 28 else url
+    print(f"[PITWALL DB] Storage mode: 100% Supabase Cloud Database ({masked_url})")
+
+    # Verify users table
+    try:
+        client.table("users").select("id").limit(1).execute()
+        print("[PITWALL DB] Supabase 'users' table verified successfully.")
+    except Exception as e:
+        logger.error(f"[PITWALL DB] Failed to query 'users' table: {e}")
+        raise RuntimeError(
+            f"Failed to access Supabase 'users' table: {e}. "
+            "Ensure 'supabase_schema.sql' has been executed in your Supabase SQL editor."
+        ) from e
+
+    # Verify F1 tables
+    try:
+        client.table("circuits").select("circuit_id").limit(1).execute()
+        print("[PITWALL DB] Supabase F1 relational tables verified successfully.")
+    except Exception as e:
+        logger.error(f"[PITWALL DB] Failed to query 'circuits' table: {e}")
+        raise RuntimeError(
+            f"Failed to access Supabase F1 tables: {e}. "
+            "Ensure the database migration script has completed."
+        ) from e
+
+
+# ------------------------------------------------------------------ Users & Auth
+def get_user_by_email(email: str) -> dict | None:
     clean_email = email.strip().lower()
     client = get_supabase_client()
-    if client:
-        res = client.table("users").select("*").ilike("email", clean_email).limit(1).execute()
-        return dict(res.data[0]) if res.data else None
-
-    return conn().execute("SELECT * FROM users WHERE lower(email) = lower(?)", (clean_email,)).fetchone()
+    res = client.table("users").select("*").ilike("email", clean_email).limit(1).execute()
+    return dict(res.data[0]) if res.data else None
 
 
-def get_user(uid: int | str) -> dict | sqlite3.Row | None:
+def get_user(uid: int | str) -> dict | None:
     clean_id = _clean_uid(uid)
     client = get_supabase_client()
-    if client:
-        res = client.table("users").select("*").eq("id", clean_id).limit(1).execute()
-        return dict(res.data[0]) if res.data else None
-
-    return conn().execute("SELECT * FROM users WHERE id = ?", (clean_id,)).fetchone()
+    res = client.table("users").select("*").eq("id", clean_id).limit(1).execute()
+    return dict(res.data[0]) if res.data else None
 
 
-def create_user(name: str, email: str, password_hash: str | None, provider: str = "password",
-                role: str = "user", avatar: str | None = None, user_id: int | None = None) -> int:
+def create_user(
+    name: str,
+    email: str,
+    password_hash: str | None,
+    provider: str = "password",
+    role: str = "user",
+    avatar: str | None = None,
+    user_id: int | None = None,
+) -> int:
     clean_email = email.strip().lower()
     clean_name = name.strip()
     client = get_supabase_client()
-    if client:
-        payload: dict[str, Any] = {
-            "name": clean_name,
-            "email": clean_email,
-            "password_hash": password_hash,
-            "provider": provider,
-            "role": role,
-            "avatar": avatar,
-            "created_at": _now(),
-        }
-        if user_id is not None:
-            payload["id"] = int(user_id)
-        res = client.table("users").insert(payload).execute()
-        if not res.data:
-            raise RuntimeError("Failed to insert user into Supabase")
-        return int(res.data[0]["id"])
-
-    c = conn()
+    payload: dict[str, Any] = {
+        "name": clean_name,
+        "email": clean_email,
+        "password_hash": password_hash,
+        "provider": provider,
+        "role": role,
+        "avatar": avatar,
+        "created_at": _now(),
+    }
     if user_id is not None:
-        cur = c.execute(
-            "INSERT INTO users (id, name, email, password_hash, provider, role, avatar, created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (int(user_id), clean_name, clean_email, password_hash, provider, role, avatar, _now()),
-        )
-    else:
-        cur = c.execute(
-            "INSERT INTO users (name, email, password_hash, provider, role, avatar, created_at) VALUES (?,?,?,?,?,?,?)",
-            (clean_name, clean_email, password_hash, provider, role, avatar, _now()),
-        )
-    c.commit()
-    return cur.lastrowid
+        payload["id"] = int(user_id)
+    res = client.table("users").insert(payload).execute()
+    if not res.data:
+        raise RuntimeError("Failed to insert user into Supabase 'users' table")
+    return int(res.data[0]["id"])
 
 
 def update_user(uid: int | str, **fields: Any) -> None:
@@ -231,40 +172,23 @@ def update_user(uid: int | str, **fields: Any) -> None:
         return
     clean_id = _clean_uid(uid)
     client = get_supabase_client()
-    if client:
-        client.table("users").update(fields).eq("id", clean_id).execute()
-        return
-
-    cols = ", ".join(f"{k} = ?" for k in fields)
-    c = conn()
-    c.execute(f"UPDATE users SET {cols} WHERE id = ?", (*fields.values(), clean_id))
-    c.commit()
+    client.table("users").update(fields).eq("id", clean_id).execute()
 
 
 def get_prefs(uid: int | str) -> dict:
     clean_id = _clean_uid(uid)
     client = get_supabase_client()
-    if client:
-        res = client.table("preferences").select("data").eq("user_id", clean_id).limit(1).execute()
-        prefs = dict(DEFAULT_PREFS)
-        if res.data:
-            raw = res.data[0].get("data")
-            if isinstance(raw, str):
-                try:
-                    raw = json.loads(raw)
-                except Exception:
-                    raw = {}
-            if isinstance(raw, dict):
-                prefs.update(raw)
-        return prefs
-
-    row = conn().execute("SELECT data FROM preferences WHERE user_id = ?", (clean_id,)).fetchone()
+    res = client.table("preferences").select("data").eq("user_id", clean_id).limit(1).execute()
     prefs = dict(DEFAULT_PREFS)
-    if row:
-        try:
-            prefs.update(json.loads(row["data"]))
-        except Exception:
-            pass
+    if res.data:
+        raw = res.data[0].get("data")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = {}
+        if isinstance(raw, dict):
+            prefs.update(raw)
     return prefs
 
 
@@ -274,38 +198,30 @@ def save_prefs(uid: int | str, prefs: dict) -> dict:
     merged.update({k: v for k, v in prefs.items() if k in DEFAULT_PREFS})
 
     client = get_supabase_client()
-    if client:
-        client.table("preferences").upsert(
-            {"user_id": clean_id, "data": merged},
-            on_conflict="user_id"
-        ).execute()
-        return merged
-
-    c = conn()
-    c.execute("INSERT INTO preferences (user_id, data) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET data = excluded.data",
-              (clean_id, json.dumps(merged)))
-    c.commit()
+    client.table("preferences").upsert(
+        {"user_id": clean_id, "data": merged},
+        on_conflict="user_id",
+    ).execute()
     return merged
 
 
 def get_all_users() -> list[dict]:
-    """Helper to list all users, useful for inspection and migration."""
+    """Lists all users directly from Supabase."""
     client = get_supabase_client()
-    if client:
-        res = client.table("users").select("*").order("id").execute()
-        return [dict(u) for u in (res.data or [])]
-
-    rows = conn().execute("SELECT * FROM users ORDER BY id").fetchall()
-    return [dict(r) for r in rows]
+    res = client.table("users").select("*").order("id").execute()
+    return [dict(u) for u in (res.data or [])]
 
 
-# ------------------------------------------------------------------ Supabase F1 Queries
-def fetch_all_rows(table_name: str, select: str = "*", gte_filters: dict[str, Any] | None = None,
-                   eq_filters: dict[str, Any] | None = None, batch_size: int = 1000) -> list[dict]:
-    """Paginates through a Supabase table/view using .range() chunks."""
+# ------------------------------------------------------------------ High-Performance Supabase F1 Queries
+def fetch_all_rows(
+    table_name: str,
+    select: str = "*",
+    gte_filters: dict[str, Any] | None = None,
+    eq_filters: dict[str, Any] | None = None,
+    batch_size: int = 1000,
+) -> list[dict]:
+    """Paginates through a Supabase table/view sequentially using .range() chunks."""
     client = get_supabase_client()
-    if not client:
-        return []
     all_data: list[dict] = []
     offset = 0
     while True:
@@ -326,6 +242,72 @@ def fetch_all_rows(table_name: str, select: str = "*", gte_filters: dict[str, An
     return all_data
 
 
+def fetch_all_rows_parallel(
+    table_name: str,
+    select: str = "*",
+    total_count: int | None = None,
+    chunk_size: int = 1000,
+    max_workers: int = 8,
+) -> list[dict]:
+    """Downloads large tables using concurrent range queries across thread-isolated Supabase clients."""
+    client = get_supabase_client()
+    if total_count is None:
+        count_res = client.table(table_name).select(select.split(",")[0], count="exact").limit(1).execute()
+        total_count = count_res.count or 0
+
+    if total_count <= 0:
+        return []
+    if total_count <= chunk_size:
+        res = client.table(table_name).select(select).range(0, total_count - 1).execute()
+        return res.data or []
+
+    chunks = [(i, min(i + chunk_size - 1, total_count - 1)) for i in range(0, total_count, chunk_size)]
+
+    def _get_chunk(rng: tuple[int, int]) -> list[dict]:
+        c = get_supabase_client()
+        res = c.table(table_name).select(select).range(rng[0], rng[1]).execute()
+        return res.data or []
+
+    workers = min(max_workers, len(chunks))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        chunk_results = list(pool.map(_get_chunk, chunks))
+
+    return [row for chunk in chunk_results for row in chunk]
+
+
+def fetch_final_standings(final_race_ids: list[int]) -> tuple[list[dict], list[dict]]:
+    """Fetches driver and constructor standings only for the final race of each season."""
+    client = get_supabase_client()
+    if not final_race_ids:
+        return [], []
+
+    # Driver standings for final rounds
+    all_ds: list[dict] = []
+    offset = 0
+    while True:
+        res = client.table("driver_standings").select("*").in_("race_id", final_race_ids).range(offset, offset + 999).execute()
+        if not res.data:
+            break
+        all_ds.extend(res.data)
+        if len(res.data) < 1000:
+            break
+        offset += 1000
+
+    # Constructor standings for final rounds
+    all_cs: list[dict] = []
+    offset = 0
+    while True:
+        res = client.table("constructor_standings").select("*").in_("race_id", final_race_ids).range(offset, offset + 999).execute()
+        if not res.data:
+            break
+        all_cs.extend(res.data)
+        if len(res.data) < 1000:
+            break
+        offset += 1000
+
+    return all_ds, all_cs
+
+
 def fetch_ml_dataset(min_season: int = 2004) -> list[dict]:
     """Fetches ML training features from the dynamic v_f1_ml_dataset SQL view."""
     return fetch_all_rows("v_f1_ml_dataset", gte_filters={"season": min_season})
@@ -342,7 +324,5 @@ def fetch_mv_constructor_summaries() -> list[dict]:
 
 
 def fetch_lap_times_for_race(race_id: int) -> list[dict]:
-    """Fetches all lap times for a specific race directly using indexed lookup."""
+    """Fetches all lap times for a specific race directly from Supabase using indexed lookup."""
     return fetch_all_rows("lap_times", eq_filters={"race_id": race_id})
-
-

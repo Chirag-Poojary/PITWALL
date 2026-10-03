@@ -44,16 +44,20 @@ Copy `.env.example` to `.env`:
 
 | Variable | Purpose |
 |---|---|
-| `SUPABASE_URL`, `SUPABASE_KEY` | Supabase Cloud Database credentials for storing users and preferences (falls back to local SQLite `pitwall.db` if empty). |
+| Variable | Purpose |
+|---|---|
+| `SUPABASE_URL`, `SUPABASE_KEY` | Supabase Cloud Database credentials for all F1 data, users, and preferences. |
 | `GOOGLE_CLIENT_ID` | Turns on “Continue with Google”. |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | The analyst account created on start-up. |
 | `JWT_SECRET` | Session signing key (auto-generated if empty). |
 | `PORT` | Defaults to 8000. |
 
-### Setting up Supabase (Storing Users & Preferences)
+### Supabase Cloud Database
 
-1. Create a free project at [supabase.com](https://supabase.com).
-2. In the Supabase Dashboard, open **SQL Editor** -> **New Query**, paste the contents of [`supabase_schema.sql`](supabase_schema.sql), and click **Run**.
+PITWALL uses **Supabase Cloud Database (PostgreSQL)** exclusively for 100% of data operations (no local database instances or files):
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. In the Supabase Dashboard, open **SQL Editor**, paste the contents of [`supabase_schema.sql`](supabase_schema.sql), and click **Run**.
 3. Go to **Project Settings -> API** and copy:
    - **Project URL** (`https://<project-ref>.supabase.co`)
    - **anon** public key or **service_role** secret key
@@ -61,14 +65,6 @@ Copy `.env.example` to `.env`:
    ```env
    SUPABASE_URL=https://<your-project-ref>.supabase.co
    SUPABASE_KEY=<your-key>
-   ```
-5. Test the connection:
-   ```bash
-   python backend/test_supabase.py
-   ```
-6. (Optional) Migrate existing local SQLite users and preferences to Supabase:
-   ```bash
-   python backend/migrate_to_supabase.py
    ```
 
 ### Setting up Google sign-in
@@ -108,7 +104,7 @@ npm run dev        # http://localhost:5173, proxies /api to the Python server on
 npm run build      # writes frontend/dist, which run.py serves
 ```
 
-Stack: React 18 + Vite + React Router + Plotly (charts). Backend: FastAPI, pandas, scikit-learn, SQLite, JWT.
+Stack: React 18 + Vite + React Router + Plotly (charts). Backend: FastAPI, pandas, scikit-learn, Supabase Cloud PostgreSQL, JWT.
 
 ## Project layout
 
@@ -117,13 +113,12 @@ run.py                     start script (loads .env, serves API + built frontend
 backend/
   app/main.py              FastAPI app, static SPA hosting
   app/auth.py              register / login / Google / admin login, JWT, PBKDF2 password hashing
-  app/db.py                SQLite users + preferences (backend/pitwall.db)
-  app/data.py              loads the CSVs, career + season aggregates, standings
+  app/db.py                Supabase Cloud Database storage layer (users, preferences, F1 queries)
+  app/data.py              in-memory F1 engine loaded directly from Supabase Cloud Database
   app/live.py              Jolpica-F1 client with cache
   app/routes_fan.py        drivers, constructors, standings, schedule, catalog, profile, feed
   app/routes_admin.py      analyst endpoints (overview, compare, race, quali, pits, reliability, circuits, models)
-  app/ml.py                models ported from the notebooks
-  data/                    the 15 CSV files
+  app/ml.py                models ported from the notebooks (features from Supabase v_f1_ml_dataset)
 frontend/src/
   fan/                     login, register, about, drivers, constructors, feed, profile
   admin/                   admin shell + pages/

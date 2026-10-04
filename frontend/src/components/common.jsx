@@ -3,8 +3,12 @@ import { api } from '../api'
 
 export function useApi(path, params, deps = []) {
   const [state, setState] = useState({ data: null, loading: true, error: null })
+  const [tick, setTick] = useState(0)
   const key = JSON.stringify([path, params])
   const seq = useRef(0)
+
+  const reload = () => setTick((t) => t + 1)
+
   useEffect(() => {
     if (!path) { setState({ data: null, loading: false, error: null }); return }
     const my = ++seq.current
@@ -13,17 +17,38 @@ export function useApi(path, params, deps = []) {
       .then((data) => my === seq.current && setState({ data, loading: false, error: null }))
       .catch((error) => my === seq.current && setState({ data: null, loading: false, error }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, ...deps])
-  return state
+  }, [key, tick, ...deps])
+  return { ...state, reload }
 }
 
 export function Loader({ label = 'Loading' }) {
   return <div className="loader"><span className="loader-bar" /><span>{label}…</span></div>
 }
 
-export function ErrorBox({ error }) {
+export function ErrorBox({ error, onRetry }) {
   if (!error) return null
-  return <div className="error-box">{error.message || String(error)}</div>
+  return (
+    <div className="error-box" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+      <span>{error.message || String(error)}</span>
+      {onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          style={{
+            background: 'rgba(255,255,255,0.1)',
+            border: '1px solid currentColor',
+            color: 'inherit',
+            padding: '0.25rem 0.75rem',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '0.85rem',
+          }}
+        >
+          Retry
+        </button>
+      )}
+    </div>
+  )
 }
 
 const NAT = {

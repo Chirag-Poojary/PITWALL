@@ -10,9 +10,25 @@ from pydantic import BaseModel
 
 from . import ml
 from .auth import require_admin
-from .data import clean, get_data, records
+from .data import clean, get_data, records, reload_data
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+
+
+@router.post("/data/refresh")
+def data_refresh():
+    """Forces a fresh re-download of all Supabase tables and recomputes all statistics."""
+    d = reload_data()
+    return {
+        "ok": True,
+        "counts": {
+            "drivers": len(d.drivers),
+            "constructors": len(d.constructors),
+            "results": len(d.results),
+            "races": len(d.races),
+            "seasons": len(d.seasons),
+        },
+    }
 
 
 # ------------------------------------------------------------------ helpers

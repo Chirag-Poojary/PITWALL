@@ -68,13 +68,17 @@ export default function Drivers() {
 
   useEffect(() => { if (meta.data && !season) setSeason(meta.data.latest_season) }, [meta.data, season])
 
+  const fetchDrivers = () => {
+    setLoading(true)
+    api('/drivers', { params: { q: f.q, nationality: f.nationality, decade: f.decade, champions: f.champions, sort: f.sort, season: f.active, limit: 48 } })
+      .then((d) => { setItems(d.items); setTotal(d.total); setErr(null) })
+      .catch(setErr)
+      .finally(() => setLoading(false))
+  }
+
   useEffect(() => {
     if (tab !== 'all') return
-    const t = setTimeout(() => {
-      setLoading(true)
-      api('/drivers', { params: { q: f.q, nationality: f.nationality, decade: f.decade, champions: f.champions, sort: f.sort, season: f.active, limit: 48 } })
-        .then((d) => { setItems(d.items); setTotal(d.total); setErr(null) }).catch(setErr).finally(() => setLoading(false))
-    }, 250)
+    const t = setTimeout(fetchDrivers, 250)
     return () => clearTimeout(t)
   }, [f, tab])
 
@@ -122,7 +126,7 @@ export default function Drivers() {
               </select>
               <label className="check"><input type="checkbox" checked={f.champions} onChange={set('champions')} /> World champions</label>
             </div>
-            <ErrorBox error={err} />
+            <ErrorBox error={err} onRetry={fetchDrivers} />
             <p className="muted small count">{loading ? 'Loading…' : `${fmt.int(total)} drivers`}</p>
             <div className="card-grid">
               {items.map((d) => (

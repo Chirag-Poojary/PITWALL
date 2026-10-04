@@ -18,13 +18,17 @@ export default function Constructors() {
   const [err, setErr] = useState(null)
 
   useEffect(() => { if (meta.data && !season) setSeason(meta.data.latest_season) }, [meta.data, season])
+  const fetchConstructors = () => {
+    setLoading(true)
+    api('/constructors', { params: { q: f.q, nationality: f.nationality, decade: f.decade, champions: f.champions, sort: f.sort, season: f.active, limit: 300 } })
+      .then((d) => { setData(d); setErr(null) })
+      .catch(setErr)
+      .finally(() => setLoading(false))
+  }
+
   useEffect(() => {
     if (tab !== 'all') return
-    const t = setTimeout(() => {
-      setLoading(true)
-      api('/constructors', { params: { q: f.q, nationality: f.nationality, decade: f.decade, champions: f.champions, sort: f.sort, season: f.active, limit: 300 } })
-        .then((d) => { setData(d); setErr(null) }).catch(setErr).finally(() => setLoading(false))
-    }, 250)
+    const t = setTimeout(fetchConstructors, 250)
     return () => clearTimeout(t)
   }, [f, tab])
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value })
@@ -71,7 +75,7 @@ export default function Constructors() {
               </select>
               <label className="check"><input type="checkbox" checked={f.champions} onChange={set('champions')} /> Champions only</label>
             </div>
-            <ErrorBox error={err} />
+            <ErrorBox error={err} onRetry={fetchConstructors} />
             <p className="muted small count">{loading ? 'Loading…' : `${fmt.int(data.total)} constructors`}</p>
             <div className="card-grid">
               {data.items.map((c) => (

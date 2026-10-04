@@ -43,10 +43,72 @@ DEFAULT_PREFS: dict[str, Any] = {
 }
 
 import base64
+import httpx
 
 _thread_local = threading.local()
 _DEF_U = base64.b64decode(b"aHR0cHM6Ly9ocXZpaWh4Z2Z5aW5sZnBtdWF4by5zdXBhYmFzZS5jbw==").decode()
 _DEF_K = base64.b64decode(b"c2Jfc2VjcmV0X0FkN3FTYUEtR1lycEVybnd1a1FrYVFfRHBrc2FRYnc=").decode()
+
+
+def get_supabase_credentials() -> tuple[str, str]:
+    """Returns validated (SUPABASE_URL, SUPABASE_KEY) tuple."""
+    url = (os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL") or _DEF_U).strip()
+    key = (
+        os.getenv("SUPABASE_KEY")
+        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_ANON_KEY")
+        or _DEF_K
+    ).strip()
+    return url, key
+
+
+def get_http_client(timeout: float = 25.0, max_connections: int = 40) -> httpx.Client:
+    """Returns a high-throughput HTTP client with persistent connection pooling."""
+    return httpx.Client(
+        limits=httpx.Limits(max_connections=max_connections, max_keepalive_connections=max_connections),
+        timeout=timeout,
+    )
+
+
+def fetch_csv(
+    table_or_view: str,
+    select: str = "*",
+    range_str: str | None = None,
+    filter_params: str | None = None,
+    client: httpx.Client | None = None,
+) -> bytes:
+    """Fetches records as raw CSV from Supabase PostgREST for high-speed streaming."""
+    url, key = get_supabase_credentials()
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Range-Unit": "items",
+        "Accept": "text/csv",
+    }
+    if range_str:
+        headers["Range"] = range_str
+
+    endpoint = f"{url}/rest/v1/{table_or_view}"
+    params = []
+    if select and select != "*":
+        params.append(f"select={select}")
+    if filter_params:
+        params.append(filter_params)
+    if params:
+        endpoint += "?" + "&".join(params)
+
+    close_client = False
+    if client is None:
+        client = get_http_client(timeout=15.0, max_connections=5)
+        close_client = True
+
+    try:
+        res = client.get(endpoint, headers=headers)
+        res.raise_for_status()
+        return res.content
+    finally:
+        if close_client:
+            client.close()
 
 
 def get_supabase_client():
@@ -55,14 +117,7 @@ def get_supabase_client():
     if client is not None:
         return client
 
-    url = (os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL") or _DEF_U).strip()
-    key = (
-        os.getenv("SUPABASE_KEY")
-        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_ANON_KEY")
-        or _DEF_K
-    ).strip()
-
+    url, key = get_supabase_credentials()
     if not url or not key:
         raise RuntimeError(
             "Supabase Cloud Database credentials not found. "
@@ -326,8 +381,39 @@ def fetch_final_standings(final_race_ids: list[int]) -> tuple[list[dict], list[d
 
 
 def fetch_ml_dataset(min_season: int = 2004) -> list[dict]:
-    """Fetches ML training features from the dynamic v_f1_ml_dataset SQL view."""
-    return fetch_all_rows("v_f1_ml_dataset", gte_filters={"season": min_season})
+    """Fetches ML training features from the dynamic v_f1_ml_dataset SQL view concurrently."""
+    import io
+    import pandas as pd
+
+    url, key = get_supabase_credentials()
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Range-Unit": "items",
+        "Accept": "text/csv",
+    }
+    with get_http_client(timeout=25.0, max_connections=20) as client:
+        chunks = [f"{i}-{min(i + 999, 9999)}" for i in range(0, 10000, 1000)]
+        filter_str = f"season=gte.{min_season}"
+
+        def _get_chunk(rng: str) -> bytes:
+            h = dict(headers)
+            h["Range"] = rng
+            r = client.get(f"{url}/rest/v1/v_f1_ml_dataset?{filter_str}", headers=h)
+            return r.content if r.status_code == 200 else b""
+
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            results = list(pool.map(_get_chunk, chunks))
+
+    dfs = [
+        pd.read_csv(io.BytesIO(c), encoding="utf-8", na_values=["\\N", "\\\\N"])
+        for c in results
+        if len(c) > 30
+    ]
+    if not dfs:
+        return []
+    df = pd.concat(dfs, ignore_index=True).dropna(subset=["result_id"])
+    return df.to_dict("records")
 
 
 def fetch_mv_driver_summaries() -> list[dict]:

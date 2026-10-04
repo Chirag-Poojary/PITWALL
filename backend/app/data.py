@@ -4,12 +4,19 @@
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import re
+import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
+import joblib
 import numpy as np
 import pandas as pd
 
@@ -53,97 +60,136 @@ class F1Data:
 
     # ------------------------------------------------------------------ Load from Supabase
     def _load_from_supabase(self) -> None:
-        from concurrent.futures import ThreadPoolExecutor
         from . import db
 
-        client = db.get_supabase_client()
+        url, key = db.get_supabase_credentials()
+        headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Range-Unit": "items",
+            "Accept": "text/csv",
+        }
 
-        # Batch 1: Small reference tables fetched concurrently
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            f_circuits = pool.submit(lambda: client.table("circuits").select("*").limit(1000).execute().data)
-            f_constructors = pool.submit(lambda: client.table("constructors").select("*").limit(1000).execute().data)
-            f_drivers = pool.submit(lambda: client.table("drivers").select("*").limit(1000).execute().data)
-            f_races = pool.submit(
-                lambda: client.table("races").select("*").range(0, 999).execute().data
-                + client.table("races").select("*").range(1000, 1999).execute().data
-            )
-            f_status = pool.submit(lambda: client.table("race_statuses").select("*").limit(1000).execute().data)
-            f_sprint = pool.submit(lambda: client.table("sprint_results").select("*").limit(1000).execute().data)
+        with db.get_http_client(timeout=25.0, max_connections=40) as client:
+            def get_csv(path: str, rng: str | None = None, params: str | None = None) -> bytes:
+                h = dict(headers)
+                if rng:
+                    h["Range"] = rng
+                q = f"{url}/rest/v1/{path}"
+                if params:
+                    q += f"?{params}"
+                r = client.get(q, headers=h)
+                return r.content if r.status_code in (200, 206) else b""
 
-        self.circuits = pd.DataFrame(f_circuits.result()).rename(
-            columns={"circuit_id": "circuitId", "circuit_ref": "circuitRef"}
-        )
-        self.constructors = pd.DataFrame(f_constructors.result()).rename(
-            columns={"constructor_id": "constructorId", "constructor_ref": "constructorRef"}
-        )
-        self.drivers = pd.DataFrame(f_drivers.result()).rename(
-            columns={"driver_id": "driverId", "driver_ref": "driverRef", "driver_number": "number"}
-        )
-        self.races = pd.DataFrame(f_races.result()).rename(
-            columns={"race_id": "raceId", "circuit_id": "circuitId", "race_date": "date", "race_time": "time"}
-        )
-        self.status = pd.DataFrame(f_status.result()).rename(
-            columns={"status_id": "statusId", "status_name": "status"}
-        )
-        self.sprint_results = pd.DataFrame(f_sprint.result()).rename(
-            columns={
-                "sprint_result_id": "resultId",
-                "race_id": "raceId",
-                "driver_id": "driverId",
-                "constructor_id": "constructorId",
-                "driver_number": "number",
-                "position_text": "positionText",
-                "position_order": "positionOrder",
-                "fastest_lap": "fastestLap",
-                "fastest_lap_time": "fastestLapTime",
-                "status_id": "statusId",
-            }
-        )
+            with ThreadPoolExecutor(max_workers=36) as pool:
+                # 1. Reference tables
+                f_circuits = pool.submit(get_csv, "circuits", "0-999")
+                f_constructors = pool.submit(get_csv, "constructors", "0-999")
+                f_drivers = pool.submit(get_csv, "drivers", "0-999")
+                f_races_1 = pool.submit(get_csv, "races", "0-999")
+                f_races_2 = pool.submit(get_csv, "races", "1000-1999")
+                f_status = pool.submit(get_csv, "race_statuses", "0-999")
+                f_sprint = pool.submit(get_csv, "sprint_results", "0-999")
 
-        # Identify season finale race IDs for standings
-        last_rounds = self.races.groupby("year")["round"].idxmax()
-        final_race_ids = self.races.loc[last_rounds, "raceId"].tolist()
+                # 2. Race results (all 27 chunks in parallel)
+                res_chunks = [(i, min(i + 999, 26758)) for i in range(0, 26759, 1000)]
+                f_results = [pool.submit(get_csv, "race_results", f"{r[0]}-{r[1]}") for r in res_chunks]
 
-        # Batch 2: Results and Final Standings
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_results = pool.submit(db.fetch_all_rows_parallel, "race_results", "*", 26759)
-            f_standings = pool.submit(db.fetch_final_standings, final_race_ids)
+                # Wait for races to compute season finale race IDs for standings
+                r1_content = f_races_1.result()
+                r2_content = f_races_2.result()
+                df_races_pre = pd.concat(
+                    [
+                        pd.read_csv(io.BytesIO(r1_content), encoding="utf-8", na_values=["\\N", "\\\\N"]),
+                        pd.read_csv(io.BytesIO(r2_content), encoding="utf-8", na_values=["\\N", "\\\\N"]),
+                    ],
+                    ignore_index=True,
+                )
+                last_rounds = df_races_pre.groupby("year")["round"].idxmax()
+                final_race_ids = df_races_pre.loc[last_rounds, "race_id"].tolist()
+                race_id_filter = "in.(" + ",".join(str(i) for i in final_race_ids) + ")"
 
-        self.results = pd.DataFrame(f_results.result()).rename(
-            columns={
-                "result_id": "resultId",
-                "race_id": "raceId",
-                "driver_id": "driverId",
-                "constructor_id": "constructorId",
-                "driver_number": "number",
-                "position_text": "positionText",
-                "position_order": "positionOrder",
-                "race_time": "time",
-                "fastest_lap": "fastestLap",
-                "fastest_lap_rank": "rank",
-                "fastest_lap_time": "fastestLapTime",
-                "fastest_lap_speed": "fastestLapSpeed",
-                "status_id": "statusId",
-            }
-        )
+                # 3. Final standings queries
+                ds_ranges = ["0-999", "1000-1999", "2000-2999", "3000-3999"]
+                f_ds = [pool.submit(get_csv, "driver_standings", rng, f"race_id={race_id_filter}") for rng in ds_ranges]
+                f_cs = pool.submit(get_csv, "constructor_standings", "0-999", f"race_id={race_id_filter}")
 
-        ds_data, cs_data = f_standings.result()
-        self.driver_standings = pd.DataFrame(ds_data).rename(
-            columns={
-                "driver_standings_id": "driverStandingsId",
-                "race_id": "raceId",
-                "driver_id": "driverId",
-                "position_text": "positionText",
-            }
-        )
-        self.constructor_standings = pd.DataFrame(cs_data).rename(
-            columns={
-                "constructor_standings_id": "constructorStandingsId",
-                "race_id": "raceId",
-                "constructor_id": "constructorId",
-                "position_text": "positionText",
-            }
-        )
+                # 4. Assemble DataFrames
+                self.circuits = pd.read_csv(io.BytesIO(f_circuits.result()), encoding="utf-8", na_values=["\\N", "\\\\N"]).rename(
+                    columns={"circuit_id": "circuitId", "circuit_ref": "circuitRef"}
+                )
+                self.constructors = pd.read_csv(io.BytesIO(f_constructors.result()), encoding="utf-8", na_values=["\\N", "\\\\N"]).rename(
+                    columns={"constructor_id": "constructorId", "constructor_ref": "constructorRef"}
+                )
+                self.drivers = pd.read_csv(io.BytesIO(f_drivers.result()), encoding="utf-8", na_values=["\\N", "\\\\N"]).rename(
+                    columns={"driver_id": "driverId", "driver_ref": "driverRef", "driver_number": "number"}
+                )
+                self.races = df_races_pre.rename(
+                    columns={"race_id": "raceId", "circuit_id": "circuitId", "race_date": "date", "race_time": "time"}
+                )
+                self.status = pd.read_csv(io.BytesIO(f_status.result()), encoding="utf-8", na_values=["\\N", "\\\\N"]).rename(
+                    columns={"status_id": "statusId", "status_name": "status"}
+                )
+                self.sprint_results = pd.read_csv(io.BytesIO(f_sprint.result()), encoding="utf-8", na_values=["\\N", "\\\\N"]).rename(
+                    columns={
+                        "sprint_result_id": "resultId",
+                        "race_id": "raceId",
+                        "driver_id": "driverId",
+                        "constructor_id": "constructorId",
+                        "driver_number": "number",
+                        "position_text": "positionText",
+                        "position_order": "positionOrder",
+                        "fastest_lap": "fastestLap",
+                        "fastest_lap_time": "fastestLapTime",
+                        "status_id": "statusId",
+                    }
+                )
+
+                raw_results = [f.result() for f in f_results]
+                self.results = pd.concat(
+                    [pd.read_csv(io.BytesIO(c), encoding="utf-8", na_values=["\\N", "\\\\N"]) for c in raw_results if len(c) > 20],
+                    ignore_index=True,
+                ).rename(
+                    columns={
+                        "result_id": "resultId",
+                        "race_id": "raceId",
+                        "driver_id": "driverId",
+                        "constructor_id": "constructorId",
+                        "driver_number": "number",
+                        "position_text": "positionText",
+                        "position_order": "positionOrder",
+                        "race_time": "time",
+                        "fastest_lap": "fastestLap",
+                        "fastest_lap_rank": "rank",
+                        "fastest_lap_time": "fastestLapTime",
+                        "fastest_lap_speed": "fastestLapSpeed",
+                        "status_id": "statusId",
+                    }
+                )
+
+                raw_ds = [f.result() for f in f_ds]
+                self.driver_standings = pd.concat(
+                    [pd.read_csv(io.BytesIO(c), encoding="utf-8", na_values=["\\N", "\\\\N"]) for c in raw_ds if len(c) > 20],
+                    ignore_index=True,
+                ).dropna(subset=["driver_standings_id"]).rename(
+                    columns={
+                        "driver_standings_id": "driverStandingsId",
+                        "race_id": "raceId",
+                        "driver_id": "driverId",
+                        "position_text": "positionText",
+                    }
+                )
+
+                self.constructor_standings = pd.read_csv(
+                    io.BytesIO(f_cs.result()), encoding="utf-8", na_values=["\\N", "\\\\N"]
+                ).rename(
+                    columns={
+                        "constructor_standings_id": "constructorStandingsId",
+                        "race_id": "raceId",
+                        "constructor_id": "constructorId",
+                        "position_text": "positionText",
+                    }
+                )
 
     # ------------------------------------------------------------------ Setup & Precomputation
     def _prepare(self) -> None:
@@ -745,6 +791,51 @@ class F1Data:
         return None if m.empty else records(m)[0]
 
 
-@lru_cache(maxsize=1)
-def get_data() -> F1Data:
-    return F1Data()
+_DATA_CACHE_TTL = 3600  # 1 hour cache TTL
+_DATA_CACHE_FILE = Path(tempfile.gettempdir()) / "pitwall_f1_cache_v5.joblib"
+_DATA_LOCK = threading.Lock()
+_DATA_INSTANCE: F1Data | None = None
+_DATA_TIMESTAMP: float = 0.0
+
+
+def get_data(force_reload: bool = False) -> F1Data:
+    """Returns the in-memory F1Data instance, backed by /tmp cache and Supabase Cloud."""
+    global _DATA_INSTANCE, _DATA_TIMESTAMP
+    now = time.time()
+    with _DATA_LOCK:
+        if not force_reload and _DATA_INSTANCE is not None and (now - _DATA_TIMESTAMP) < _DATA_CACHE_TTL:
+            return _DATA_INSTANCE
+
+        if not force_reload and _DATA_CACHE_FILE.exists():
+            try:
+                mtime = _DATA_CACHE_FILE.stat().st_mtime
+                if (now - mtime) < _DATA_CACHE_TTL:
+                    cached_obj = joblib.load(_DATA_CACHE_FILE)
+                    if isinstance(cached_obj, F1Data):
+                        _DATA_INSTANCE = cached_obj
+                        _DATA_TIMESTAMP = mtime
+                        logger.info("Loaded F1Data from /tmp cache in <100ms")
+                        return _DATA_INSTANCE
+            except Exception as e:
+                logger.warning(f"Could not load F1Data from disk cache: {e}")
+
+        logger.info("Loading fresh F1Data from Supabase Cloud Database...")
+        instance = F1Data()
+        _DATA_INSTANCE = instance
+        _DATA_TIMESTAMP = now
+        try:
+            joblib.dump(instance, _DATA_CACHE_FILE, compress=1)
+        except Exception as e:
+            logger.debug(f"Could not persist F1Data to disk cache: {e}")
+        return _DATA_INSTANCE
+
+
+def reload_data() -> F1Data:
+    """Forces an immediate fresh download from Supabase and updates in-memory and disk caches."""
+    try:
+        if _DATA_CACHE_FILE.exists():
+            _DATA_CACHE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return get_data(force_reload=True)
+

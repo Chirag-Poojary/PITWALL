@@ -3,7 +3,6 @@
 __pycache__/
 backend/pitwall.db
 backend/.jwt_secret
-backend/models_cache.joblib
 backend/data/
 data/
 *.db

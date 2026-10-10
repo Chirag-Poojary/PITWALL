@@ -26,6 +26,7 @@ DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 async def lifespan(app: FastAPI):
     db.init()
     auth.seed_admin()
+    ml.start_training()
     yield
 
 

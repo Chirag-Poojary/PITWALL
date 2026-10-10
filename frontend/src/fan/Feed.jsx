@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { ErrorBox, fmt, Loader, localTime, useApi, useCountdown } from '../components/common'
 import { teamColor } from '../teams'
 import { PageHead } from './Drivers'
+import RacePrediction from './RacePrediction'
 
 const KIND_LABEL = { practice: 'Practice', qualifying: 'Qualifying', sprint: 'Sprint', race: 'Race' }
 
@@ -67,6 +68,8 @@ export default function Feed() {
             ) : (
               <section className="next-race"><h2>No upcoming races</h2><p className="muted">The season is over, or none of the Grands Prix you follow are still to come.</p></section>
             )}
+
+            <RacePrediction race={nr} favDrivers={p.fav_drivers} />
 
             <section className="panel">
               <h3 className="h3">Upcoming sessions you follow</h3>

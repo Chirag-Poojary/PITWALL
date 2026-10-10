@@ -37,7 +37,7 @@ from .data import clean, get_data
 
 RS = 42
 CACHE = Path(__file__).resolve().parent.parent / "models_cache.joblib"
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 
 STATE: dict = {"status": "idle", "error": None, "started": None, "finished": None, "models": {}}
 _lock = threading.Lock()
@@ -415,8 +415,13 @@ def clustering(k: int = 4, season_from: int = 2004, season_to: int = 2024, min_r
 
 # =====================================================================
 # training orchestration
-# =====================================================================
-TRAINERS = {"points": train_points, "winner": train_winner, "regression": train_regression}
+def train_race_prediction() -> dict:
+    from . import predict
+    return predict.train()
+
+
+TRAINERS = {"points": train_points, "winner": train_winner, "regression": train_regression,
+            "race_pred": train_race_prediction}
 
 
 def _train_all() -> None:

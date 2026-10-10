@@ -29,22 +29,65 @@ SESSION_KEYS = [
 ]
 
 
-def _get(path: str):
+def _get(path: str, offset: int = 0, ttl: int | None = None):
     now = time.time()
+    key = f"{path}?offset={offset}"
     with _lock:
-        hit = _cache.get(path)
-        if hit and now - hit[0] < TTL:
+        hit = _cache.get(key)
+        if hit and now - hit[0] < (ttl or TTL):
             return hit[1]
     try:
-        r = httpx.get(f"{BASE}/{path}", timeout=8.0, params={"limit": 100})
+        r = httpx.get(f"{BASE}/{path}", timeout=10.0, params={"limit": 100, "offset": offset})
         r.raise_for_status()
         data = r.json()["MRData"]
     except Exception:
         # serve stale data if we have it
         return hit[1] if hit else None
     with _lock:
-        _cache[path] = (now, data)
+        _cache[key] = (now, data)
     return data
+
+
+def season_results(season: int, finished_season: bool = False) -> list[dict] | None:
+    """Every race result of a season as flat rows (pages through the API, 100 results per call).
+
+    A finished season never changes, so it is cached for a day; the current one for TTL.
+    Returns None if the API cannot be reached.
+    """
+    ttl = 86400 if finished_season else TTL
+    rows, offset, total = [], 0, None
+    while total is None or offset < total:
+        data = _get(f"{season}/results.json", offset=offset, ttl=ttl)
+        if data is None:
+            return None
+        total = int(data.get("total", 0))
+        for race in data["RaceTable"]["Races"]:
+            for res in race.get("Results", []):
+                grid = int(res.get("grid") or 0)
+                rows.append({
+                    "season": int(race["season"]), "round": int(race["round"]), "date": race.get("date"),
+                    "circuit": race["Circuit"]["circuitId"], "race_name": race["raceName"],
+                    "driver": res["Driver"]["driverId"],
+                    "driver_name": f"{res['Driver']['givenName']} {res['Driver']['familyName']}",
+                    "code": res["Driver"].get("code"), "team": res["Constructor"]["constructorId"],
+                    "team_name": res["Constructor"]["name"], "grid": grid if grid > 0 else None,
+                    "pos": int(res["position"]), "status": res.get("status", ""),
+                })
+        offset += 100
+        if total and offset < total:
+            time.sleep(0.3)  # stay well inside the API's rate limit
+    return rows
+
+
+def qualifying(season: int | str, rnd: int) -> list[dict] | None:
+    data = _get(f"{season}/{rnd}/qualifying.json")
+    if not data:
+        return None
+    races = data["RaceTable"]["Races"]
+    if not races:
+        return []
+    return [{"driver": q["Driver"]["driverId"], "team": q["Constructor"]["constructorId"], "pos": int(q["position"])}
+            for q in races[0].get("QualifyingResults", [])]
 
 
 def _iso(date: str | None, t: str | None) -> str | None:

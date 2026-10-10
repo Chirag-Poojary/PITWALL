@@ -45,6 +45,25 @@ function Scenario({ report }) {
   )
 }
 
+function DriverModel() {
+  const { data: r } = useModel('/admin/models/race-prediction')
+  if (!r) return null
+  const cols = [{ key: 'model', label: 'Model' },
+    { key: 'favourite_won', label: 'Favourite won', num: true, render: (v) => fmt.pct(v) },
+    { key: 'winner_in_top3', label: 'Winner in top 3', num: true, render: (v) => fmt.pct(v) },
+    { key: 'podium_overlap', label: 'Podium overlap', num: true, render: (v) => fmt.pct(v) },
+    { key: 'log_loss', label: 'Log loss', num: true, render: (v) => fmt.num(v, 4) }]
+  return (
+    <Card title="Driver-level winner model (used in the fan feed)" span={3}
+      sub={`Scores every driver from pre-race form, team form and circuit record; probabilities normalised per race. Trained ${r.train_seasons}, tested ${r.test_seasons} (${r.variants.pre.test.races} races). The lowest log loss is chosen, then refit on 2000–2024 and fed live 2025+ results.`}>
+      <div style={{ display: 'grid', gap: 14 }}>
+        <div><h4 className="a-subhead">Before qualifying – chosen: {r.variants.pre.chosen}</h4><Table dense rows={r.variants.pre.comparison} columns={cols} /></div>
+        <div><h4 className="a-subhead">With qualifying grid – chosen: {r.variants.grid.chosen}</h4><Table dense rows={r.variants.grid.comparison} columns={cols} /></div>
+      </div>
+    </Card>
+  )
+}
+
 export default function ModelWinner() {
   const { data: r, error, training } = useModel('/admin/models/winner')
   const [cm, setCm] = useState('Random Forest')
@@ -63,6 +82,7 @@ export default function ModelWinner() {
         ['Features', r.n_features], ['Best accuracy', fmt.pct(best.accuracy), best.model], ['Most frequent winner share', fmt.pct(majority), dist[0][0]]]} />
       <div className="a-grid">
         <Scenario report={r} />
+        <DriverModel />
         <Card title="Model comparison" sub="Macro-averaged precision / recall / F1" span={2}>
           <Table dense rows={r.comparison} columns={[{ key: 'model', label: 'Model' }, ...['accuracy', 'precision', 'recall', 'f1'].map((k) => ({ key: k, label: k.toUpperCase(), num: true, render: (v) => fmt.num(v, 3) }))]} />
           <Plot height={240} data={['accuracy', 'f1'].map((m, i) => ({ type: 'bar', name: m.toUpperCase(), x: r.comparison.map((c) => c.model), y: r.comparison.map((c) => c[m]), marker: { color: palette(i) } }))}

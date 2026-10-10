@@ -83,6 +83,13 @@ The CSV dataset ends with the 2024 season. The **feed** and the profile pickers 
 standings and last result from the free **Jolpica-F1 API** (`api.jolpi.ca`, the successor of Ergast),
 cached for 30 minutes. If the API can’t be reached, the app falls back to the 2024 season from the dataset and says so.
 
+## Race prediction in My Feed
+
+My Feed shows the predicted top three for the next Grand Prix, with win and podium probabilities for the top ten. Before qualifying it
+uses form only; as soon as qualifying results are published, the prediction switches to the model that also uses the grid.
+It needs the live API (it downloads the 2025 and current-season results once, then caches them). Without internet the card shows a
+back-test of the last race in the dataset instead, with the actual result beside the prediction.
+
 ## Media (images and videos)
 
 All media links live in `frontend/src/media.js`:
@@ -116,6 +123,7 @@ backend/
   app/db.py                Supabase Cloud Database storage layer (users, preferences, F1 queries)
   app/data.py              in-memory F1 engine loaded directly from Supabase Cloud Database
   app/live.py              Jolpica-F1 client with cache
+  app/predict.py           driver-level next-race winner prediction (Logistic Regression / RF / GB)
   app/routes_fan.py        drivers, constructors, standings, schedule, catalog, profile, feed
   app/routes_admin.py      analyst endpoints (overview, compare, race, quali, pits, reliability, circuits, models)
   app/ml.py                models ported from the notebooks (features from Supabase v_f1_ml_dataset)
@@ -132,6 +140,7 @@ notebooks/                 the original notebooks
 | Points-finish classifier | `f1_naive_bayes_classification.ipynb` | GaussianNB, PowerTransform + `var_smoothing` grid search, RF benchmark; features grid, driver/team form (last 10), round, season, circuit geo; 80/20 stratified | ≈ 76% accuracy (baseline 52%), AUC ≈ 0.84 |
 | Race-winner classifier | `f1_classification_project.ipynb` | One row per race, per-team best grid / recent wins & podiums / circuit wins; DT, NB, RF; train 2000–2017, test 2018–2024 | RF ≈ 58% accuracy over 10 classes |
 | Fastest-lap regression | `f1_regression_project.ipynb` | Linear, Ridge, RF, Gradient Boosting; train 2004–2020, test 2021–2024 | Ridge best, R² ≈ 0.82, RMSE ≈ 8.4 km/h |
+| Next-race winner (fan feed) | new, extends the classification notebook | Per-driver Logistic Regression / RF / GB (lowest log loss chosen) on recent form, team form, circuit record and, once available, the qualifying grid; probabilities normalised per race; trained 2000–2020, tested 2021–2024, refit on 2000–2024 and fed live 2025+ results | favourite won 54% (57% with grid), winner in predicted top 3 in 77% (89% with grid) |
 | Driver clustering | `clustering.ipynb` | K-Means on standardised driver-season features; live controls for K, seasons, min races, features | silhouette ≈ 0.47 at K=4 (2004–2024) |
 
 One difference from the regression notebook: rows without an official fastest-lap speed are dropped instead of imputed.

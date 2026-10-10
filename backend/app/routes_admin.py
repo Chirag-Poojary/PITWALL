@@ -535,3 +535,9 @@ def models_clustering(k: int = Query(4, ge=2, le=8), season_from: int = 2004, se
         return ml.clustering(k, season_from, season_to, min_races, feats)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@router.get("/models/race-prediction")
+def models_race_prediction():
+    return _need("race_pred")["report"]
+

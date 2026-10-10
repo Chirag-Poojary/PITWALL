@@ -249,3 +249,36 @@ def feed(u=Depends(require_user)):
         "driver_standings": ds[:10], "constructor_standings": cs[:10], "last_race": last,
         "server_time": now.isoformat(),
     }
+
+
+# ---------------------------------------------------------------- race prediction
+@router.get("/predictions/race")
+def race_prediction(season: int | None = None, round: int | None = None, u=Depends(require_user)):
+    """Top-3 winner prediction for the next Grand Prix (or the given round) from the driver-level model."""
+    from . import ml, predict
+    try:
+        model = ml.model("race_pred")
+    except RuntimeError:
+        if ml.status()["status"] == "idle":
+            ml.start_training()
+        raise HTTPException(503, "The prediction model is still training. Try again in a few seconds.")
+    sched, source = get_schedule()
+    if source == "live":
+        now = datetime.now(timezone.utc)
+        races = sched["races"]
+        if season and round:
+            race = next((r for r in races if r["season"] == season and r["round"] == round), None)
+        else:
+            race = next((r for r in races if _parse(r["start"]) + timedelta(hours=2) >= now), None)
+        if race is None:
+            return {"available": False, "reason": "No upcoming race in the current calendar."}
+        try:
+            return predict.predict_next(model, race)
+        except Exception as e:  # live results unreachable or incomplete
+            out = predict.backtest_last(model)
+            out["reason"] = f"Live race results could not be loaded ({e}). Showing how the model called the last race in the dataset."
+            return out
+    out = predict.backtest_last(model)
+    out["reason"] = "The live F1 API is unreachable, so this shows how the model called the last race in the dataset."
+    return out
+

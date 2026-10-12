@@ -146,3 +146,26 @@ notebooks/                 the original notebooks
 One difference from the regression notebook: rows without an official fastest-lap speed are dropped instead of imputed.
 
 Fan-made educational project. Not affiliated with Formula 1, the FIA or any team.
+
+## Contributors
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/coderritikjain">
+        <img src="https://github.com/coderritikjain.png" width="100" height="100" style="border-radius:50%;" alt="Ritik Jain"/><br/>
+        <b>Ritik Jain</b>
+      </a><br/>
+      <sub>@coderritikjain</sub>
+    </td>
+    <td align="center">
+      <a href="https://github.com/Chirag-Poojary">
+        <img src="https://github.com/Chirag-Poojary.png" width="100" height="100" style="border-radius:50%;" alt="Chirag Poojary"/><br/>
+        <b>Chirag Poojary</b>
+      </a><br/>
+      <sub>@Chirag-Poojary</sub>
+    </td>
+  </tr>
+</table>
+
+
